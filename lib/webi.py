@@ -173,6 +173,42 @@ class WebIntelligence:
 
         return documents
 
+    def set_purge_doc(self, doc_id: int) -> tuple[bool, bool, bool]:
+        """
+        Purge les données contenu dans le document WebI
+        Args:
+            doc_id (int): Identifiant numérique du document WebI
+        Returns:
+            tuple[bool, bool]: Valeur de retour de l'opération de purge, d'enregistrement et de déchargement du document
+        """
+        url: str = f"{self.bip.get_bip_url}/raylight/v1/documents/{doc_id}"
+        param = {"purge": "true"}
+        unload_body = {"document": {"state": "Unused"}}
+
+        header: Dict[str, str] = self._set_header(type="json")
+        purge: bool = False
+        save: bool = False
+        unload: bool = False
+
+        try:
+            # purge du document
+            response = requests.put(url, headers=header, params=param)
+            response.raise_for_status()
+            purge = "success" in response.json()
+
+            # enregistrement
+            response = requests.put(url, headers=header)
+            response.raise_for_status()
+            save = "success" in response.json()
+
+            # dechargement (evite surcharge de session du WIPS)
+            response = requests.put(url, headers=header, json=unload_body)
+            response.raise_for_status()
+            unload = "success" in response.json()
+        except Exception as err:
+            self.log.error(f"Echec API - {url} - {err}")
+   
+        return purge, save, unload
 
     ######################
     ### DATA PROVIDERS ###
