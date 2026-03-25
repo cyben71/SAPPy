@@ -1,0 +1,10 @@
+# folders
+tmp/
+__pycache__
+rt/
+.vscode/
+
+#  files
+.DS_Store
+*checkpoint.*
+*.log
