@@ -3,13 +3,18 @@
 # #####################################
 
 ### Paramètres spécifiques au script 'webi_purge_documents' ###
+exclude_private_docs: True      # exclusion des documents privés (favoris utilisateurs)
+
 exclude_list: [
     'AT9rtSAiIVNKjdnddkBF.pw',
     'AWyV09k7kqdIhKxvuHCti58.99',
     'AYigrxSDW51InJ.KSDRj13I'
 ]
 
+#########################
 ### Variables de démo ###
+#########################
+
 user: "${USER}"
 var_env: ${PWDTEST}
 placeholder: "My Application_${PWDTEST}"

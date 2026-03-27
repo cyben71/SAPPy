@@ -1,11 +1,10 @@
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import requests
 import json
 from lib.bootstrap.appenv import AppEnv
 from lib.bip import BIPlatform
 from lib.bootstrap.logger import Logger
-
 from typing import Any, Optional, Dict, List
 
 class WebIntelligence:
@@ -117,12 +116,12 @@ class WebIntelligence:
 
             return response.text
     
-    def get_doc_list(self) -> List[Dict[str, Any]]:
+    def get_doc_list(self, store: Optional[bool] = None) -> List[Dict[str, Any]]:
         """
         Retourne la liste des documents WebI de la plateforme sous la forme d'une liste de dictionnaire.
         Le dictionnaire JSON est aplati pour permettre son parcours via la fonction data.get(key)
         Args:
-            None
+            store (Boolean, Optional): Active l'enregistrement du listing des documents. Désactivé par defaut
         Return:
             data (list): Liste de dictionnaire (aplati) des documents
         Structure du dictionnaire: 
@@ -170,6 +169,25 @@ class WebIntelligence:
                 break
 
             offset += limit
+
+        # enregistrement du listing de documents
+        if store is None: store = False
+        else: store = store
+        
+        if store:
+            if AppEnv.is_folder_exists(f"{self._application_home}/tmp") == False:
+                AppEnv.mkdir(f"{self._application_home}/tmp")
+
+            try:
+                docs_list = f"{self._application_home}/tmp/documents_list_{AppEnv.get_current_date()}.txt"
+                with open (docs_list, 'w', encoding='utf-8') as file:
+                    for l in documents:
+                        file.write(f"{l}\n")
+                    file.close
+            except BaseException as err:
+                self.log.error(f"Echec de sauvegarde de la liste des documents - {err}")
+            else:
+                self.log.info(f"Liste des documents enregistrée dans '{docs_list}'")
 
         return documents
 
@@ -264,7 +282,7 @@ class WebIntelligence:
         Retourne le detail des fournisseurs de données d'un document sous la forme d'une liste de dictionnaire.
         Args:
             doc_id (int): Identifiant numérique du document.
-            simplified (bool, Facultatif)
+            simplified (bool, Facultatif): Simplification des résultats en limitant les valeurs renvoyées par l'API
         Return:
             data (list): Liste de dictionnaire de détails des fournisseurs de données du document.
         """
