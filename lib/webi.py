@@ -1,4 +1,4 @@
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 import requests
 import json
@@ -116,80 +116,127 @@ class WebIntelligence:
 
             return response.text
     
-    def get_doc_list(self, store: Optional[bool] = None) -> List[Dict[str, Any]]:
-        """
-        Retourne la liste des documents WebI de la plateforme sous la forme d'une liste de dictionnaire.
-        Le dictionnaire JSON est aplati pour permettre son parcours via la fonction data.get(key)
-        Args:
-            store (Boolean, Optional): Active l'enregistrement du listing des documents. Désactivé par defaut
-        Return:
-            data (list): Liste de dictionnaire (aplati) des documents
-        Structure du dictionnaire: 
-        • <id> (Integer) The document ID
-        • <cuid> (String) The unique document ID
-        • <name> (String) The document name
-        • <description> (String) The document description
-        • <folderId> (Integer) The identifier of the folder of the CMS repository that contains the document
-        • <scheduled> (Boolean) true if the document has been scheduled
-        """
+    ### ATTENTION : Fonction désactivée car inadaptée à la production - Problème de perfs sur très gros volume
+    # def get_doc_list(self, store: Optional[bool] = None) -> List[Dict[str, Any]]:
+    #     """
+    #     Retourne la liste des documents WebI de la plateforme sous la forme d'une liste de dictionnaire.
+    #     Le dictionnaire JSON est aplati pour permettre son parcours via la fonction data.get(key)
+    #     Args:
+    #         store (Boolean, Optional): Active l'enregistrement du listing des documents. Désactivé par defaut
+    #     Return:
+    #         data (list): Liste de dictionnaire (aplati) des documents
+    #     Structure du dictionnaire: 
+    #     • <id> (Integer) The document ID
+    #     • <cuid> (String) The unique document ID
+    #     • <name> (String) The document name
+    #     • <description> (String) The document description
+    #     • <folderId> (Integer) The identifier of the folder of the CMS repository that contains the document
+    #     • <scheduled> (Boolean) true if the document has been scheduled
+    #     """
         
-        offset: int = 0
-        limit: int = 50          # valeur maximale autorisée par l'API
-        raw_data: Dict[str, Any] = {}
-        documents: List = []
+    #     offset: int = 0
+    #     limit: int = 50          # valeur maximale autorisée par l'API
+    #     raw_data: Dict[str, Any] = {}
+    #     documents: List = []
+    #     header: Dict[str, str] = self._set_header(type="json")
+
+    #     while True:
+    #         param = {"offset": offset, "limit": limit}
+    #         url: str = f"{self.bip.get_bip_url}/raylight/v1/documents"
+    #         try:
+    #             response = requests.get(url, headers=header, params=param)
+    #             response.raise_for_status()
+    #         except Exception as err:
+    #             self.log.error(f"Echec API - {url} - {err}")
+    #         else:
+    #             print(f"Récupération de la liste des documents (50) terminée avec succès (offset: {offset})")
+    #             raw_data = json.loads(response.text).get("documents", {}).get("document", {})
+                
+    #         batch = raw_data
+
+    #         # L'API peut renvoyer un dict (1 résultat) ou une liste (n résultats)
+    #         if isinstance(batch, dict):
+    #             batch = [batch]
+
+    #         # si plus rien dans batch, plus aucun document à récupérer
+    #         if not batch:
+    #             break                      
+
+    #         # empilement des données récupérées
+    #         documents.extend(batch)
+
+    #         # dernière page atteinte
+    #         if len(batch) < limit:
+    #             break
+
+    #         # incrément d'offset pour avoir les 50 prochains documents
+    #         offset += limit
+
+    #     # enregistrement du listing de documents
+    #     if store is None: store = False
+    #     else: store = store
+        
+    #     if store:
+    #         if AppEnv.is_folder_exists(f"{self._application_home}/tmp") == False:
+    #             AppEnv.mkdir(f"{self._application_home}/tmp")
+
+    #         try:
+    #             docs_list = f"{self._application_home}/tmp/documents_list_{AppEnv.get_current_date()}.txt"
+    #             with open (docs_list, 'w', encoding='utf-8') as file:
+    #                 for l in documents:
+    #                     file.write(f"{l}\n")
+    #                 file.close
+    #         except BaseException as err:
+    #             self.log.error(f"Echec de sauvegarde de la liste des documents - {err}")
+    #         else:
+    #             self.log.info(f"Liste des documents enregistrée dans '{docs_list}'")
+
+    #     return documents
+
+    def request_cms(self, query: str) -> List[Dict]:
+        """
+        Récupère les résultats de la requête transmise au CMS via l'API cmsquery. (équivalent à AdminTools)
+        Avantage : interroge directement le CMS, aucune session ouverte sur le WIPS.
+        Args:
+            query (str): Requête SQL d'interrogation du CMS
+        Return:
+            data (List): Liste de dictionnaire correspondant au retour du CMS
+        """
+        url      = f"{self.bip.get_bip_url}/v1/cmsquery"
+        page     = 1
+        pagesize = 500
+        data = []
+
         header: Dict[str, str] = self._set_header(type="json")
 
         while True:
-            param = {"offset": offset, "limit": limit}
-            url: str = f"{self.bip.get_bip_url}/raylight/v1/documents"
+            payload = {
+                "query": (query)
+            }
+            params = {"page": page, "pagesize": pagesize}
+
             try:
-                response = requests.get(url, headers=header, params=param)
+                response = requests.post(url, headers=header, json=payload, params=params)
                 response.raise_for_status()
             except Exception as err:
-                self.log.error(f"Echec API - {url} - {err}")
-            else:
-                # print(f"Récupération de la liste des documents terminée avec succès (offset: {offset})")
-                raw_data = json.loads(response.text).get("documents", {}).get("document", {})
-                
-            batch = raw_data
-
-            # L'API peut renvoyer un dict (1 résultat) ou une liste (n résultats)
-            if isinstance(batch, dict):
-                batch = [batch]
-
-            # si plus rien dans batch, plus aucun document à récupérer
-            if not batch:
-                break                      
-
-            # empilement des données récupérées
-            documents.extend(batch)
-
-            # dernière page atteinte
-            if len(batch) < limit:
+                self.log.error(f"Echec cmsquery page {page} - {err}")
                 break
 
-            offset += limit
+            raw_data    = response.json()
+            entries = raw_data.get("entries", [])
+            # print(entries)
 
-        # enregistrement du listing de documents
-        if store is None: store = False
-        else: store = store
-        
-        if store:
-            if AppEnv.is_folder_exists(f"{self._application_home}/tmp") == False:
-                AppEnv.mkdir(f"{self._application_home}/tmp")
+            data.extend(entries)
+            
+            if not entries:
+                break
 
-            try:
-                docs_list = f"{self._application_home}/tmp/documents_list_{AppEnv.get_current_date()}.txt"
-                with open (docs_list, 'w', encoding='utf-8') as file:
-                    for l in documents:
-                        file.write(f"{l}\n")
-                    file.close
-            except BaseException as err:
-                self.log.error(f"Echec de sauvegarde de la liste des documents - {err}")
-            else:
-                self.log.info(f"Liste des documents enregistrée dans '{docs_list}'")
+            if len(entries) < pagesize:
+                break   # dernière page
 
-        return documents
+            page += 1
+
+        return data
 
     def set_purge_doc(self, doc_id: int) -> tuple[bool, bool, bool]:
         """
@@ -227,6 +274,25 @@ class WebIntelligence:
             self.log.error(f"Echec API - {url} - {err}")
    
         return purge, save, unload
+
+    def get_all_personal_folder_ids(self, folders: List[Dict], root_ids: set) -> set:
+        """
+        Recherche la liste des dossiers contenus dans les dossiers utilisateurs (Favoris / Personal Folders)
+        Args:
+            folders (List[Dict]): Liste (de dictionnaires )des dossiers présents sur la plateforme
+            root_ids (set): Set des identifiants des dossiers utilisateurs 
+        Returns:
+            set: Set des identifiants des dossiers contenus dans les dossiers utilisateurs
+        """
+        all_ids = set(root_ids)
+        changed = True
+        while changed:
+            changed = False
+            for f in folders:
+                if f["SI_ID"] not in all_ids and f.get("SI_PARENT_FOLDER") in all_ids:
+                    all_ids.add(f["SI_ID"])
+                    changed = True
+        return all_ids
 
     ######################
     ### DATA PROVIDERS ###

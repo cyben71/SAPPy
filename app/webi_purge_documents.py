@@ -116,27 +116,110 @@ else:
 log.log("")  
 
 
-# ## Liste des documents
-# - liste exportée dans APPLICATION_HOME/tmp
-
-# In[10]:
-
-
-log.info(f"## récupération du patrimoine de documents WebI ##")
-documents = webi.get_doc_list(store=True)
-log.info(f"-- nombre de documents total: {len(documents)}")
-log.log("")
-
-
-# ## Gestion des exclusions
+# ## Liste des documents & dossiers
 
 # In[11]:
 
 
-log.info(f"## gestion des exclusions ##")
+# # propager aux sous-dossiers via SI_PARENT_FOLDER
+# def get_all_personal_folder_ids(folders: list[dict], root_ids: set) -> set:
+#     all_ids = set(root_ids)
+#     changed = True
+#     while changed:
+#         changed = False
+#         for f in folders:
+#             if f["SI_ID"] not in all_ids and f.get("SI_PARENT_FOLDER") in all_ids:
+#                 all_ids.add(f["SI_ID"])
+#                 changed = True
+#     return all_ids
 
 
 # In[12]:
+
+
+log.info(f"## récupération du patrimoine de documents WebI ##")
+
+sql_all_docs = props.get("list_all_documents")
+sql_all_folders = props.get("list_all_folders")
+
+documents = webi.request_cms(sql_all_docs)
+folders = webi.request_cms(sql_all_folders)
+
+
+# ### DEBUG On - Listing et contenu des Dossiers utilisateurs (Favoris)
+
+# In[ ]:
+
+
+# # répartition par SI_KIND
+# from collections import Counter
+
+# kinds_count = Counter(f["SI_KIND"] for f in folders)
+# print("Répartition par SI_KIND :")
+# for kind, count in kinds_count.items():
+#     print(f"  {kind} : {count}")
+
+# print(f"\nTotal dossiers récupérés : {len(folders)}")
+
+# # dossiers avec OBTYPE 18 quelque part dans le PATH
+# personal = [f for f in folders if any(
+#     f["SI_PATH"].get(f"SI_FOLDER_OBTYPE{i}") == 18
+#     for i in range(1, f["SI_PATH"].get("SI_NUM_FOLDERS", 0) + 1)
+# )]
+# print(f"Dossiers avec OBTYPE 18 dans PATH : {len(personal)}")
+
+# # dossiers racines utilisateur (OBTYPE1 == 18) — attendu ~42
+# roots = [f for f in folders if f["SI_PATH"].get("SI_FOLDER_OBTYPE1") == 18]
+# print(f"Dossiers racines utilisateur (OBTYPE1==18) : {len(roots)}")
+
+# # dossiers sans SI_PATH ou SI_PATH vide
+# no_path = [f for f in folders if not f.get("SI_PATH")]
+# print(f"Dossiers sans SI_PATH : {len(no_path)}")
+# for f in no_path:
+#     print(f"  SI_ID={f['SI_ID']} | SI_KIND={f['SI_KIND']} | SI_NAME={f['SI_NAME']}")
+
+# # afficher le SI_PATH de tous les FavoritesFolder
+# favorites = [f for f in folders if f["SI_KIND"] == "FavoritesFolder"]
+# print(f"Nombre de FavoritesFolder : {len(favorites)}")
+
+# for f in favorites:
+#     print(f"  SI_ID={f['SI_ID']} | SI_NAME={f['SI_NAME']} | SI_PATH={f['SI_PATH']}")
+
+
+# ### DEBUG Off
+
+# In[13]:
+
+
+# les FavoritesFolder sont les racines personnelles — pas besoin de SI_PATH
+favorites_ids = {f["SI_ID"] for f in folders if f["SI_KIND"] == "FavoritesFolder"}
+
+personal_folder_ids = webi.get_all_personal_folder_ids(folders, favorites_ids)
+public_folder_ids   = {f["SI_ID"] for f in folders if f["SI_ID"] not in personal_folder_ids}
+
+docs_in_private_folder = [d for d in documents if d["SI_PARENT_FOLDER"] in personal_folder_ids]
+docs_in_public_folder  = [d for d in documents if d["SI_PARENT_FOLDER"] not in personal_folder_ids]
+
+
+# In[14]:
+
+
+log.info(f"-- nombre de documents total: {len(documents)}")
+log.info(f"-- nombre de documents 'privés': {len(docs_in_private_folder)}")
+log.info(f"-- nombre de documents 'publics': {len(docs_in_public_folder)}")
+
+log.log("")
+
+
+# ## Construction des exclusions
+
+# In[15]:
+
+
+log.info(f"## construction des exclusions ##")
+
+
+# In[16]:
 
 
 # liste des CUID à exclure
@@ -146,78 +229,64 @@ log.info(f"-- nombre prévisionnel de documents à exclure (via CUID): {len(excl
 # vérification que les CUID à exclure sont bien listés (warning dans le cas contraire)
 log.log("")
 log.info(f"contrôle des CUID à exclure...")
-cuids_in_documents = {doc["cuid"] for doc in documents}
+cuids_in_documents = {doc["SI_CUID"] for doc in documents}
 missing_cuid = [cuid for cuid in exclude_cuid if cuid not in cuids_in_documents]
 if missing_cuid:
     for cuid in missing_cuid:
         log.warning(f"CUID introuvable dans le patrimoine des documents: {cuid}")
 
 
-# In[13]:
+# In[17]:
 
 
 # liste des documents privés (si exclusion activée)
 if exclude_private:
-    docs_details = []
-    # for d in documents:
-    #     doc_info = webi.get_doc_info(doc_id=d["id"])
-    #     docs_details.append(doc_info)
-
-    # concurrent.futures pour paralléliser
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        docs_details = list(executor.map(lambda d: webi.get_doc_info(d["id"]), documents))
-
-    private_docs = [d for d in docs_details if d["path"] == "Personal Folders"]
-    private_cuid = [doc["cuid"] for doc in private_docs]
-    log.info(f"-- nombre prévisionnel de documents à exclure (via Favoris): {len(private_cuid)} ")
+    private_cuid = [doc["SI_CUID"] for doc in docs_in_private_folder]
+    log.info(f"-- nombre prévisionnel de documents personnel à exclure : {len(private_cuid)} ")
 else:
     private_cuid= []
 log.log("")
 
 
-# In[14]:
+# In[19]:
 
 
 # liste des documents exclus (par CUID et/ou  Favoris utilisateurs )
-excluding_list = [d for d in documents if d["cuid"] in exclude_cuid or d["cuid"] in private_cuid]
-excluding_list_cuid = {x["cuid"] for x in excluding_list}
+excluding_list = [d for d in documents if d["SI_CUID"] in exclude_cuid or d["SI_CUID"] in private_cuid]
+excluding_list_cuid = {x["SI_CUID"] for x in excluding_list}
 
 
-# In[15]:
+# In[21]:
 
 
 # affichage
 log.log("")
 log.info(f"-- nombre réel de documents à exclure de la purge: {len(excluding_list)}")
 for x in excluding_list:
-    log.log(f"-> {x['id']} - {x['cuid']} - {x['name']}")
+    log.log(f"-> {x['SI_ID']} - {x['SI_CUID']} - {x['SI_NAME']}")
 log.log("")
 
 
-# ## Gestion de la purge
+# ## Lancement de la purge
 
-# In[16]:
+# In[22]:
 
 
 # liste finale des documents à purger
-log.info(f"## début du traitement de purge des documents ##")
-purge_list = [d for d in documents if d["cuid"] not in excluding_list_cuid]
+log.info(f"## lancement du traitement de purge des documents ##")
+purge_list = [d for d in documents if d["SI_CUID"] not in excluding_list_cuid]
 log.info(f"-- nombre total de documents à purger: {len(purge_list)}")
 log.log("")
 
 
-# In[17]:
+# In[23]:
 
 
 # liste des idenfitants pour boucle de purge
-# ids_purge = {doc["id"] for doc in purge_list}
-ids_purge = sorted(doc["id"] for doc in purge_list)
-# len(ids_purge)
+ids_purge = sorted(doc["SI_ID"] for doc in purge_list)
 
 
-# In[18]:
+# In[24]:
 
 
 compteur: int = 0
@@ -242,7 +311,7 @@ for id in ids_purge:
 log.log("")
 
 
-# In[19]:
+# In[25]:
 
 
 # log.info(f"-- nombre d'itérations produites / nombre documents à purger: {compteur}/{len(purge_list)}")
@@ -256,7 +325,7 @@ log.log("")
 
 # ## Deconnexion
 
-# In[20]:
+# In[26]:
 
 
 # Deconnexion
