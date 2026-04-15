@@ -12,10 +12,11 @@
 # 3. Récupération des documents à exclure de la purge (via fichier de configuration)
 # 4. Contrôle des CUID (dans la cas ou un CUID à exclure n'est pas présent)
 # 5. Génération du listing de purge final (patrimoine - exclusion - rejet)
-# 6. Boucle de traitement (pause de 60 sec tous les 100 documents traités)
-#    1. purge
-#    2. enregistrement
-#    3. déchargement
+# 6. Boucle de traitement avec parallélisation (traitement de plusieurs documents en même temps)
+#    1. purge webi
+#    2. enregistrement webi
+#    3. déchargement wips
+#    4. pause adaptative de x secondes en fonction de la pile de documents traités
 # 7. Déconnexion
 
 # In[1]:
@@ -54,6 +55,7 @@ epy = init_env()
 # In[3]:
 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 props = epy.cfgprops
 yml = epy.cfgyaml
@@ -83,6 +85,7 @@ webi = epy.load_class(module_name='webi', args=[APPLICATION_HOME, APPLICATION_NA
 
 batch_size = int(props.get("batch_size"))
 sleep = int(props.get("sleep"))
+workers = int(props.get("max_workers"))
 # exclude_private = bool(yml.get("exclude_private_docs"))
 exclude_private = yml.get("exclude_private_docs") is True
 
@@ -118,7 +121,7 @@ log.log("")
 
 # ## Liste des documents & dossiers
 
-# In[11]:
+# In[10]:
 
 
 # # propager aux sous-dossiers via SI_PARENT_FOLDER
@@ -134,7 +137,7 @@ log.log("")
 #     return all_ids
 
 
-# In[12]:
+# In[11]:
 
 
 log.info(f"## récupération du patrimoine de documents WebI ##")
@@ -148,7 +151,7 @@ folders = webi.request_cms(sql_all_folders)
 
 # ### DEBUG On - Listing et contenu des Dossiers utilisateurs (Favoris)
 
-# In[ ]:
+# In[12]:
 
 
 # # répartition par SI_KIND
@@ -248,7 +251,7 @@ else:
 log.log("")
 
 
-# In[19]:
+# In[18]:
 
 
 # liste des documents exclus (par CUID et/ou  Favoris utilisateurs )
@@ -256,7 +259,7 @@ excluding_list = [d for d in documents if d["SI_CUID"] in exclude_cuid or d["SI_
 excluding_list_cuid = {x["SI_CUID"] for x in excluding_list}
 
 
-# In[21]:
+# In[19]:
 
 
 # affichage
@@ -269,7 +272,7 @@ log.log("")
 
 # ## Lancement de la purge
 
-# In[22]:
+# In[20]:
 
 
 # liste finale des documents à purger
@@ -279,39 +282,74 @@ log.info(f"-- nombre total de documents à purger: {len(purge_list)}")
 log.log("")
 
 
-# In[23]:
+# In[21]:
 
 
 # liste des idenfitants pour boucle de purge
 ids_purge = sorted(doc["SI_ID"] for doc in purge_list)
 
 
-# In[24]:
+# In[22]:
 
 
-compteur: int = 0
-erreurs: int = 0
-for id in ids_purge:
-    try:
-        purged, saved, unloaded = webi.set_purge_doc(id)
-        if purged and saved and unloaded:
-            log.info(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
-            compteur += 1
-        else:
-            log.warning(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
+# compteur: int = 0
+# erreurs: int = 0
+# for id in ids_purge:
+#     try:
+#         purged, saved, unloaded = webi.set_purge_doc(id)
+#         if purged and saved and unloaded:
+#             log.info(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
+#             compteur += 1
+#         else:
+#             log.warning(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
+#             erreurs += 1
+
+#         if compteur % batch_size == 0:
+#             log.info(f"** {compteur} documents traités — pause de stabilisation ({sleep} sec)... **")
+#             time.sleep(sleep)
+#     except Exception as err:
+#         log.error(f"Erreur de purge sur le document ({id}): {err}")
+#         erreurs += 1
+#         continue  # on continue malgré l'erreur
+# log.log("")
+
+
+# In[23]:
+
+
+compteur = 0
+erreurs = 0
+results = []
+
+with ThreadPoolExecutor(max_workers=workers) as executor:
+    futures = {executor.submit(webi.set_purge_doc, id): id for id in ids_purge}
+
+    for i, future in enumerate(as_completed(futures), start=1):
+        id = futures[future]
+        try:
+            purged, saved, unloaded = future.result()
+            if purged and saved and unloaded:
+                log.info(f"Purge ({id}): OK")
+                compteur += 1
+            else:
+                log.warning(f"Purge ({id}): partielle -> purge={purged} save={saved} unload={unloaded}")
+                erreurs += 1
+        except Exception as err:
+            log.error(f"Erreur purge ({id}): {err}")
             erreurs += 1
 
-        if compteur % batch_size == 0:
-            log.info(f"** {compteur} documents traités — pause de stabilisation ({sleep} sec)... **")
-            time.sleep(sleep)
-    except Exception as err:
-        log.error(f"Erreur de purge sur le document ({id}): {err}")
-        erreurs += 1
-        continue  # on continue malgré l'erreur
+        # Pause adaptative pour stabilisation du WIPS
+        # if i % batch_size == 0:
+        #     log.info(f"** {i} documents traités — pause ({sleep} sec)... **")
+        #     time.sleep(sleep)
+        if i % batch_size == 0:
+            pause = sleep / workers
+            log.info(f"** pause adaptative de {pause:.0f}s **")
+            time.sleep(pause)
 log.log("")
 
 
-# In[25]:
+# In[24]:
 
 
 # log.info(f"-- nombre d'itérations produites / nombre documents à purger: {compteur}/{len(purge_list)}")
@@ -325,7 +363,7 @@ log.log("")
 
 # ## Deconnexion
 
-# In[26]:
+# In[25]:
 
 
 # Deconnexion

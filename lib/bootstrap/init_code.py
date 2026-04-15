@@ -1,4 +1,4 @@
-__version__ = "1.0.2"
+__version__ = "1.0.4"
 
 import importlib.util
 import inspect
@@ -11,16 +11,23 @@ from lib.bootstrap import cfgyaml
 from lib.bootstrap import cfgproperties
 from lib.bootstrap import logger
 from lib.bootstrap import appenv
-# from lib.bootstrap import docgenerator      # incoming in EPY
+from lib.bootstrap import docgenerator
+# from lib.bootstrap import envloader
 
 def init() -> None:
+
+    # 1. Load user environment variables FIRST
+    #    Ensures ${MY_VAR} placeholders in .properties/.yaml resolve correctly
+    #    in non-interactive contexts (JupyterLab server, systemd, VS Code remote)
+    # context.envloader = envloader.EnvLoader()
+    
     # load and instanciate classes in context
+    context.appenv = appenv.AppEnv()
     context.cfgyaml = cfgyaml.ConfigYaml(app_home=context.APPLICATION_HOME)
     context.cfgprops = cfgproperties.ConfigProperties(app_home=context.APPLICATION_HOME)
-    context.appenv = appenv.AppEnv()
-    context.log = logger.Logger(app_home=context.APPLICATION_HOME, app_name=context.APPLICATION_NAME)
-    # context.doc = docgenerator.DocGenerator(app_home=context.APPLICATION_HOME, app_name=context.APPLICATION_NAME)
 
+    context.log = logger.Logger(app_home=context.APPLICATION_HOME, app_name=context.APPLICATION_NAME)
+    context.doc = docgenerator.DocGenerator(app_home=context.APPLICATION_HOME, app_name=context.APPLICATION_NAME)
 
 # load classes included in /lib/bootstrap
 # safe version. introspection of class arguments
@@ -177,6 +184,9 @@ def summarize_context() -> None:
         print(f"📘  PROPERTIES file loaded : {context.CFGPROPS_FILE}")
     if hasattr(context, 'CFGYAML_FILE'):
         print(f"📘  YAML file loaded : {context.CFGYAML_FILE}")
+    # show vars env list
+    #if hasattr(context, 'envloader'):
+    #    context.envloader.summarize()
     
     print()
     print(color("✅  Context is ready.", "92"))  # vert

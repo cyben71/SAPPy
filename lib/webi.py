@@ -1,4 +1,4 @@
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import requests
 import json
@@ -6,6 +6,7 @@ from lib.bootstrap.appenv import AppEnv
 from lib.bip import BIPlatform
 from lib.bootstrap.logger import Logger
 from typing import Any, Optional, Dict, List
+import time
 
 class WebIntelligence:
     """
@@ -115,83 +116,6 @@ class WebIntelligence:
                     self.log.error(f"Echec API - {url} - {err}")
 
             return response.text
-    
-    ### ATTENTION : Fonction désactivée car inadaptée à la production - Problème de perfs sur très gros volume
-    # def get_doc_list(self, store: Optional[bool] = None) -> List[Dict[str, Any]]:
-    #     """
-    #     Retourne la liste des documents WebI de la plateforme sous la forme d'une liste de dictionnaire.
-    #     Le dictionnaire JSON est aplati pour permettre son parcours via la fonction data.get(key)
-    #     Args:
-    #         store (Boolean, Optional): Active l'enregistrement du listing des documents. Désactivé par defaut
-    #     Return:
-    #         data (list): Liste de dictionnaire (aplati) des documents
-    #     Structure du dictionnaire: 
-    #     • <id> (Integer) The document ID
-    #     • <cuid> (String) The unique document ID
-    #     • <name> (String) The document name
-    #     • <description> (String) The document description
-    #     • <folderId> (Integer) The identifier of the folder of the CMS repository that contains the document
-    #     • <scheduled> (Boolean) true if the document has been scheduled
-    #     """
-        
-    #     offset: int = 0
-    #     limit: int = 50          # valeur maximale autorisée par l'API
-    #     raw_data: Dict[str, Any] = {}
-    #     documents: List = []
-    #     header: Dict[str, str] = self._set_header(type="json")
-
-    #     while True:
-    #         param = {"offset": offset, "limit": limit}
-    #         url: str = f"{self.bip.get_bip_url}/raylight/v1/documents"
-    #         try:
-    #             response = requests.get(url, headers=header, params=param)
-    #             response.raise_for_status()
-    #         except Exception as err:
-    #             self.log.error(f"Echec API - {url} - {err}")
-    #         else:
-    #             print(f"Récupération de la liste des documents (50) terminée avec succès (offset: {offset})")
-    #             raw_data = json.loads(response.text).get("documents", {}).get("document", {})
-                
-    #         batch = raw_data
-
-    #         # L'API peut renvoyer un dict (1 résultat) ou une liste (n résultats)
-    #         if isinstance(batch, dict):
-    #             batch = [batch]
-
-    #         # si plus rien dans batch, plus aucun document à récupérer
-    #         if not batch:
-    #             break                      
-
-    #         # empilement des données récupérées
-    #         documents.extend(batch)
-
-    #         # dernière page atteinte
-    #         if len(batch) < limit:
-    #             break
-
-    #         # incrément d'offset pour avoir les 50 prochains documents
-    #         offset += limit
-
-    #     # enregistrement du listing de documents
-    #     if store is None: store = False
-    #     else: store = store
-        
-    #     if store:
-    #         if AppEnv.is_folder_exists(f"{self._application_home}/tmp") == False:
-    #             AppEnv.mkdir(f"{self._application_home}/tmp")
-
-    #         try:
-    #             docs_list = f"{self._application_home}/tmp/documents_list_{AppEnv.get_current_date()}.txt"
-    #             with open (docs_list, 'w', encoding='utf-8') as file:
-    #                 for l in documents:
-    #                     file.write(f"{l}\n")
-    #                 file.close
-    #         except BaseException as err:
-    #             self.log.error(f"Echec de sauvegarde de la liste des documents - {err}")
-    #         else:
-    #             self.log.info(f"Liste des documents enregistrée dans '{docs_list}'")
-
-    #     return documents
 
     def request_cms(self, query: str) -> List[Dict]:
         """
@@ -238,43 +162,46 @@ class WebIntelligence:
 
         return data
 
-    def set_purge_doc(self, doc_id: int) -> tuple[bool, bool, bool]:
+    def set_purge_doc(self, doc_id: int, retries: int = 3) -> tuple[bool, bool, bool]:
         """
         Purge les données contenu dans le document WebI
         Args:
             doc_id (int): Identifiant numérique du document WebI
+            retries (int): Nombre de tentatives en cas d'échec de l'instruction
         Returns:
             tuple[bool, bool]: Valeur de retour de l'opération de purge, d'enregistrement et de déchargement du document
         """
         url: str = f"{self.bip.get_bip_url}/raylight/v1/documents/{doc_id}"
         param = {"purge": "true"}
         unload_body = {"document": {"state": "Unused"}}
+        header = self._set_header(type="json")
 
-        header: Dict[str, str] = self._set_header(type="json")
-        purge: bool = False
-        save: bool = False
-        unload: bool = False
+        for attempt in range(1, retries + 1):
+            purge = save = unload = False
+            try:
+                response = requests.put(url, headers=header, params=param)
+                response.raise_for_status()
+                purge = "success" in response.json()
 
-        try:
-            # purge du document
-            response = requests.put(url, headers=header, params=param)
-            response.raise_for_status()
-            purge = "success" in response.json()
+                response = requests.put(url, headers=header)
+                response.raise_for_status()
+                save = "success" in response.json()
 
-            # enregistrement
-            response = requests.put(url, headers=header)
-            response.raise_for_status()
-            save = "success" in response.json()
+                response = requests.put(url, headers=header, json=unload_body)
+                response.raise_for_status()
+                unload = "success" in response.json()
 
-            # dechargement (evite surcharge de session du WIPS)
-            response = requests.put(url, headers=header, json=unload_body)
-            response.raise_for_status()
-            unload = "success" in response.json()
-        except Exception as err:
-            self.log.error(f"Echec API - {url} - {err}")
-   
-        return purge, save, unload
+                return purge, save, unload
 
+            except Exception as err:
+                wait = 2 ** attempt  # 2s, 4s, 8s
+                self.log.warning(f"Tentative {attempt}/{retries} échouée sur ({doc_id}): {err} — attente {wait}s")
+                if attempt < retries:
+                    time.sleep(wait)
+
+        self.log.error(f"Echec définitif sur ({doc_id}) après {retries} tentatives")
+        return False, False, False
+    
     def get_all_personal_folder_ids(self, folders: List[Dict], root_ids: set) -> set:
         """
         Recherche la liste des dossiers contenus dans les dossiers utilisateurs (Favoris / Personal Folders)
