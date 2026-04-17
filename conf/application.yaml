@@ -2,13 +2,14 @@
 # Fichier de propriété de type "YAML" #
 # #####################################
 
-### Paramètres spécifiques au script 'webi_purge_documents' ###
-exclude_private_docs: True      # exclusion des documents privés (favoris utilisateurs)
+### Paramètres spécifiques aux scripts 'webi_purge_*.py' ###
+exclude_private_docs: True      # exclusion des documents privés pour webi_purge_all_documents
 
+# Liste des documents (publics ou privés) à exclure de la purge 
 exclude_list: [
-    'AT9rtSAiIVNKjdnddkBF.pw',
-    'AWyV09k7kqdIhKxvuHCti58.99',
-    'AYigrxSDW51InJ.KSDRj13I'
+    'AT9rtSAiIAmNKjdnddkBF.pw',
+    'AWyV19k7kqdMhKxvuHCti58.99',
+    'AYigZnPSDW51InJ.KSDRj13I'
 ]
 
 #########################

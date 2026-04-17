@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Purge des documents WebI
+# # Purge WebI - Documents privés 
 # 
-# Nettoyage des données contenues dans les documents WebI (publics et privés) d'une plateforme SAP BI 4.3
+# Nettoyage des données contenues dans les documents WebI privés d'une plateforme SAP BI 4.3
 
 # ## Etapes
 # 
@@ -12,20 +12,19 @@
 # 3. Récupération des documents à exclure de la purge (via fichier de configuration)
 # 4. Contrôle des CUID (dans la cas ou un CUID à exclure n'est pas présent)
 # 5. Génération du listing de purge final (patrimoine - exclusion - rejet)
-# 6. Boucle de traitement avec parallélisation (traitement de plusieurs documents en même temps)
-#    1. purge webi
-#    2. enregistrement webi
-#    3. déchargement wips
-#    4. pause adaptative de x secondes en fonction de la pile de documents traités
+# 6. Boucle de traitement (pause de 60 sec tous les 100 documents traités)
+#    1. purge
+#    2. enregistrement
+#    3. déchargement
 # 7. Déconnexion
 
-# In[1]:
+# In[ ]:
 
 
-APPLICATION_NAME = "BIP43_Purge_Documents"
+APPLICATION_NAME = "BIP43_Purge_Private_Documents"
 
 
-# In[2]:
+# In[ ]:
 
 
 import sys
@@ -52,7 +51,7 @@ epy = init_env()
 
 # ## Chargement des classes et variables
 
-# In[3]:
+# In[ ]:
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,7 +61,7 @@ yml = epy.cfgyaml
 log = epy.log
 
 
-# In[4]:
+# In[ ]:
 
 
 # information d'identification BIP 4.3
@@ -72,7 +71,7 @@ password = props.get("bo_password")
 type_auth = props.get("bo_authentication")
 
 
-# In[5]:
+# In[ ]:
 
 
 # chargement des classes BIP
@@ -80,34 +79,39 @@ bip = epy.load_class(module_name='bip', args=[APPLICATION_HOME, APPLICATION_NAME
 webi = epy.load_class(module_name='webi', args=[APPLICATION_HOME, APPLICATION_NAME, bip])
 
 
-# In[6]:
+# In[ ]:
 
 
 batch_size = int(props.get("batch_size"))
 sleep = int(props.get("sleep"))
 workers = int(props.get("max_workers"))
-# exclude_private = bool(yml.get("exclude_private_docs"))
 exclude_private = yml.get("exclude_private_docs") is True
 
 
-# In[7]:
+# In[ ]:
 
 
-log.log("################################")
-log.log("### PURGE DES DOCUMENTS WEBI ###")
-log.log("################################")
+start = time.time()
+
+
+# In[ ]:
+
+
+log.log("#######################################")
+log.log("### PURGE DES DOCUMENTS PRIVES WEBI ###")
+log.log("#######################################")
 log.log("")
 
 
 # ## Authentification & Accès
 
-# In[8]:
+# In[ ]:
 
 
 log.info(f"## authentification sur la plateforme '{url}' ##")
 
 
-# In[9]:
+# In[ ]:
 
 
 # Connexion
@@ -121,23 +125,7 @@ log.log("")
 
 # ## Liste des documents & dossiers
 
-# In[10]:
-
-
-# # propager aux sous-dossiers via SI_PARENT_FOLDER
-# def get_all_personal_folder_ids(folders: list[dict], root_ids: set) -> set:
-#     all_ids = set(root_ids)
-#     changed = True
-#     while changed:
-#         changed = False
-#         for f in folders:
-#             if f["SI_ID"] not in all_ids and f.get("SI_PARENT_FOLDER") in all_ids:
-#                 all_ids.add(f["SI_ID"])
-#                 changed = True
-#     return all_ids
-
-
-# In[11]:
+# In[ ]:
 
 
 log.info(f"## récupération du patrimoine de documents WebI ##")
@@ -149,80 +137,32 @@ documents = webi.request_cms(sql_all_docs)
 folders = webi.request_cms(sql_all_folders)
 
 
-# ### DEBUG On - Listing et contenu des Dossiers utilisateurs (Favoris)
-
-# In[12]:
-
-
-# # répartition par SI_KIND
-# from collections import Counter
-
-# kinds_count = Counter(f["SI_KIND"] for f in folders)
-# print("Répartition par SI_KIND :")
-# for kind, count in kinds_count.items():
-#     print(f"  {kind} : {count}")
-
-# print(f"\nTotal dossiers récupérés : {len(folders)}")
-
-# # dossiers avec OBTYPE 18 quelque part dans le PATH
-# personal = [f for f in folders if any(
-#     f["SI_PATH"].get(f"SI_FOLDER_OBTYPE{i}") == 18
-#     for i in range(1, f["SI_PATH"].get("SI_NUM_FOLDERS", 0) + 1)
-# )]
-# print(f"Dossiers avec OBTYPE 18 dans PATH : {len(personal)}")
-
-# # dossiers racines utilisateur (OBTYPE1 == 18) — attendu ~42
-# roots = [f for f in folders if f["SI_PATH"].get("SI_FOLDER_OBTYPE1") == 18]
-# print(f"Dossiers racines utilisateur (OBTYPE1==18) : {len(roots)}")
-
-# # dossiers sans SI_PATH ou SI_PATH vide
-# no_path = [f for f in folders if not f.get("SI_PATH")]
-# print(f"Dossiers sans SI_PATH : {len(no_path)}")
-# for f in no_path:
-#     print(f"  SI_ID={f['SI_ID']} | SI_KIND={f['SI_KIND']} | SI_NAME={f['SI_NAME']}")
-
-# # afficher le SI_PATH de tous les FavoritesFolder
-# favorites = [f for f in folders if f["SI_KIND"] == "FavoritesFolder"]
-# print(f"Nombre de FavoritesFolder : {len(favorites)}")
-
-# for f in favorites:
-#     print(f"  SI_ID={f['SI_ID']} | SI_NAME={f['SI_NAME']} | SI_PATH={f['SI_PATH']}")
-
-
-# ### DEBUG Off
-
-# In[13]:
+# In[ ]:
 
 
 # les FavoritesFolder sont les racines personnelles — pas besoin de SI_PATH
 favorites_ids = {f["SI_ID"] for f in folders if f["SI_KIND"] == "FavoritesFolder"}
-
 personal_folder_ids = webi.get_all_personal_folder_ids(folders, favorites_ids)
-public_folder_ids   = {f["SI_ID"] for f in folders if f["SI_ID"] not in personal_folder_ids}
-
 docs_in_private_folder = [d for d in documents if d["SI_PARENT_FOLDER"] in personal_folder_ids]
-docs_in_public_folder  = [d for d in documents if d["SI_PARENT_FOLDER"] not in personal_folder_ids]
 
 
-# In[14]:
+# In[ ]:
 
 
-log.info(f"-- nombre de documents total: {len(documents)}")
+#log.info(f"-- nombre de documents total: {len(documents)}")
 log.info(f"-- nombre de documents 'privés': {len(docs_in_private_folder)}")
-log.info(f"-- nombre de documents 'publics': {len(docs_in_public_folder)}")
-
 log.log("")
 
 
 # ## Construction des exclusions
 
-# In[15]:
+# In[ ]:
 
 
 log.info(f"## construction des exclusions ##")
 
 
-# In[16]:
+# In[ ]:
 
 
 # liste des CUID à exclure
@@ -232,34 +172,23 @@ log.info(f"-- nombre prévisionnel de documents à exclure (via CUID): {len(excl
 # vérification que les CUID à exclure sont bien listés (warning dans le cas contraire)
 log.log("")
 log.info(f"contrôle des CUID à exclure...")
-cuids_in_documents = {doc["SI_CUID"] for doc in documents}
+cuids_in_documents = {doc["SI_CUID"] for doc in docs_in_private_folder}
 missing_cuid = [cuid for cuid in exclude_cuid if cuid not in cuids_in_documents]
 if missing_cuid:
     for cuid in missing_cuid:
         log.warning(f"CUID introuvable dans le patrimoine des documents: {cuid}")
 
 
-# In[17]:
 
-
-# liste des documents privés (si exclusion activée)
-if exclude_private:
-    private_cuid = [doc["SI_CUID"] for doc in docs_in_private_folder]
-    log.info(f"-- nombre prévisionnel de documents personnel à exclure : {len(private_cuid)} ")
-else:
-    private_cuid= []
-log.log("")
-
-
-# In[18]:
+# In[ ]:
 
 
 # liste des documents exclus (par CUID et/ou  Favoris utilisateurs )
-excluding_list = [d for d in documents if d["SI_CUID"] in exclude_cuid or d["SI_CUID"] in private_cuid]
+excluding_list = [d for d in docs_in_private_folder if d["SI_CUID"] in exclude_cuid]
 excluding_list_cuid = {x["SI_CUID"] for x in excluding_list}
 
 
-# In[19]:
+# In[ ]:
 
 
 # affichage
@@ -272,49 +201,24 @@ log.log("")
 
 # ## Lancement de la purge
 
-# In[20]:
+# In[ ]:
 
 
 # liste finale des documents à purger
 log.info(f"## lancement du traitement de purge des documents ##")
-purge_list = [d for d in documents if d["SI_CUID"] not in excluding_list_cuid]
+purge_list = [d for d in docs_in_private_folder if d["SI_CUID"] not in excluding_list_cuid]
 log.info(f"-- nombre total de documents à purger: {len(purge_list)}")
 log.log("")
 
 
-# In[21]:
+# In[ ]:
 
 
 # liste des idenfitants pour boucle de purge
 ids_purge = sorted(doc["SI_ID"] for doc in purge_list)
 
 
-# In[22]:
-
-
-# compteur: int = 0
-# erreurs: int = 0
-# for id in ids_purge:
-#     try:
-#         purged, saved, unloaded = webi.set_purge_doc(id)
-#         if purged and saved and unloaded:
-#             log.info(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
-#             compteur += 1
-#         else:
-#             log.warning(f"Purge du document ({id}): purge -> {purged} - enregistrement -> {saved} -> déchargement -> {unloaded}")
-#             erreurs += 1
-
-#         if compteur % batch_size == 0:
-#             log.info(f"** {compteur} documents traités — pause de stabilisation ({sleep} sec)... **")
-#             time.sleep(sleep)
-#     except Exception as err:
-#         log.error(f"Erreur de purge sur le document ({id}): {err}")
-#         erreurs += 1
-#         continue  # on continue malgré l'erreur
-# log.log("")
-
-
-# In[23]:
+# In[ ]:
 
 
 compteur = 0
@@ -339,17 +243,14 @@ with ThreadPoolExecutor(max_workers=workers) as executor:
             erreurs += 1
 
         # Pause adaptative pour stabilisation du WIPS
-        # if i % batch_size == 0:
-        #     log.info(f"** {i} documents traités — pause ({sleep} sec)... **")
-        #     time.sleep(sleep)
         if i % batch_size == 0:
             pause = sleep / workers
-            log.info(f"** pause adaptative de {pause:.0f}s **")
+            log.info(f"** {compteur}/{len(purge_list)} documents traités - pause adaptative de {pause:.0f}s **")
             time.sleep(pause)
 log.log("")
 
 
-# In[24]:
+# In[ ]:
 
 
 # log.info(f"-- nombre d'itérations produites / nombre documents à purger: {compteur}/{len(purge_list)}")
@@ -363,10 +264,12 @@ log.log("")
 
 # ## Deconnexion
 
-# In[25]:
+# In[ ]:
 
 
 # Deconnexion
 log.info("## Deconnexion ##")
 bip.unset_token()
+log.log("")
+log.info(f"### Traitement terminée en {time.time() - start:.1f} secondes ###")
 
