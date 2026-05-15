@@ -11,20 +11,21 @@
 # 2. Récupération du patrimoine (documents WebI de la plateforme)
 # 3. Récupération des documents à exclure de la purge (via fichier de configuration)
 # 4. Contrôle des CUID (dans la cas ou un CUID à exclure n'est pas présent)
-# 5. Génération du listing de purge final (patrimoine - exclusion - rejet)
-# 6. Boucle de traitement (pause de 60 sec tous les 100 documents traités)
+# 5. Génération du listing de purge final (patrimoine - exclusion - rejet) => on ne retient sur les documents privés
+# 6. Boucle de traitement (pause adaptative de x sec tout les 100 documents traités)
 #    1. purge
 #    2. enregistrement
 #    3. déchargement
+#    4. déconnexion / reconnexion (toutes les x min pour éviter l'expiration du token en plein traitement)
 # 7. Déconnexion
 
-# In[ ]:
+# In[1]:
 
 
 APPLICATION_NAME = "BIP43_Purge_Private_Documents"
 
 
-# In[ ]:
+# In[2]:
 
 
 import sys
@@ -51,7 +52,7 @@ epy = init_env()
 
 # ## Chargement des classes et variables
 
-# In[ ]:
+# In[3]:
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -61,7 +62,7 @@ yml = epy.cfgyaml
 log = epy.log
 
 
-# In[ ]:
+# In[4]:
 
 
 # information d'identification BIP 4.3
@@ -71,7 +72,7 @@ password = props.get("bo_password")
 type_auth = props.get("bo_authentication")
 
 
-# In[ ]:
+# In[5]:
 
 
 # chargement des classes BIP
@@ -79,22 +80,23 @@ bip = epy.load_class(module_name='bip', args=[APPLICATION_HOME, APPLICATION_NAME
 webi = epy.load_class(module_name='webi', args=[APPLICATION_HOME, APPLICATION_NAME, bip])
 
 
-# In[ ]:
+# In[6]:
 
 
 batch_size = int(props.get("batch_size"))
 sleep = int(props.get("sleep"))
 workers = int(props.get("max_workers"))
+session_renewal_minutes = int(props.get("session_renewal_minutes", 60))
 exclude_private = yml.get("exclude_private_docs") is True
 
 
-# In[ ]:
+# In[7]:
 
 
 start = time.time()
 
 
-# In[ ]:
+# In[8]:
 
 
 log.log("#######################################")
@@ -105,13 +107,13 @@ log.log("")
 
 # ## Authentification & Accès
 
-# In[ ]:
+# In[9]:
 
 
 log.info(f"## authentification sur la plateforme '{url}' ##")
 
 
-# In[ ]:
+# In[10]:
 
 
 # Connexion
@@ -125,7 +127,7 @@ log.log("")
 
 # ## Liste des documents & dossiers
 
-# In[ ]:
+# In[11]:
 
 
 log.info(f"## récupération du patrimoine de documents WebI ##")
@@ -137,7 +139,7 @@ documents = webi.request_cms(sql_all_docs)
 folders = webi.request_cms(sql_all_folders)
 
 
-# In[ ]:
+# In[12]:
 
 
 # les FavoritesFolder sont les racines personnelles — pas besoin de SI_PATH
@@ -146,23 +148,22 @@ personal_folder_ids = webi.get_all_personal_folder_ids(folders, favorites_ids)
 docs_in_private_folder = [d for d in documents if d["SI_PARENT_FOLDER"] in personal_folder_ids]
 
 
-# In[ ]:
+# In[13]:
 
 
-#log.info(f"-- nombre de documents total: {len(documents)}")
 log.info(f"-- nombre de documents 'privés': {len(docs_in_private_folder)}")
 log.log("")
 
 
 # ## Construction des exclusions
 
-# In[ ]:
+# In[14]:
 
 
 log.info(f"## construction des exclusions ##")
 
 
-# In[ ]:
+# In[15]:
 
 
 # liste des CUID à exclure
@@ -179,8 +180,7 @@ if missing_cuid:
         log.warning(f"CUID introuvable dans le patrimoine des documents: {cuid}")
 
 
-
-# In[ ]:
+# In[16]:
 
 
 # liste des documents exclus (par CUID et/ou  Favoris utilisateurs )
@@ -188,7 +188,7 @@ excluding_list = [d for d in docs_in_private_folder if d["SI_CUID"] in exclude_c
 excluding_list_cuid = {x["SI_CUID"] for x in excluding_list}
 
 
-# In[ ]:
+# In[17]:
 
 
 # affichage
@@ -221,6 +221,7 @@ ids_purge = sorted(doc["SI_ID"] for doc in purge_list)
 # In[ ]:
 
 
+"""
 compteur = 0
 erreurs = 0
 results = []
@@ -247,6 +248,86 @@ with ThreadPoolExecutor(max_workers=workers) as executor:
             pause = sleep / workers
             log.info(f"** {compteur}/{len(purge_list)} documents traités - pause adaptative de {pause:.0f}s **")
             time.sleep(pause)
+log.log("")
+"""
+
+
+# In[ ]:
+
+
+compteur = 0
+erreurs = 0
+results = []
+
+# Durée maximale d'une session avant reconnexion (en secondes)
+session_renewal_seconds = session_renewal_minutes * 60
+last_reconnect_time = time.time()
+
+# Traitement séquentiel par lots pour permettre les reconnexions inter-lots
+ids_remaining = list(ids_purge)
+
+while ids_remaining:
+    # Déterminer la taille du prochain lot à soumettre avant la prochaine reconnexion
+    time_since_reconnect = time.time() - last_reconnect_time
+    time_until_renewal = session_renewal_seconds - time_since_reconnect
+
+    if time_until_renewal <= 0:
+        # Reconnexion immédiate si le délai est déjà dépassé
+        ids_batch = []
+    else:
+        ids_batch = ids_remaining[:batch_size]
+        ids_remaining = ids_remaining[batch_size:]
+
+    # --- Reconnexion périodique ---
+    if not ids_batch or time.time() - last_reconnect_time >= session_renewal_seconds:
+        log.info(f"** Renouvellement de session (toutes les {session_renewal_minutes} min) — déconnexion... **")
+        try:
+            bip.unset_token()
+        except Exception as err:
+            log.warning(f"Erreur lors de la déconnexion: {err}")
+
+        time.sleep(2)  # courte pause entre déco et reco
+
+        log.info(f"** Reconnexion en cours... **")
+        token = bip.set_token(base_url=url, username=account, password=password, auth_type=type_auth)
+        if token:
+            log.info("Reconnexion réussie")
+        else:
+            log.error("Echec de reconnexion — arrêt du traitement")
+            break
+
+        last_reconnect_time = time.time()
+        #log.log("")
+
+        if not ids_batch:
+            # Le lot n'avait pas été constitué (reconnexion immédiate) — on en constitue un maintenant
+            ids_batch = ids_remaining[:batch_size]
+            ids_remaining = ids_remaining[batch_size:]
+
+    # --- Traitement du lot courant ---
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(webi.set_purge_doc, id): id for id in ids_batch}
+
+        for future in as_completed(futures):
+            id = futures[future]
+            try:
+                purged, saved, unloaded = future.result()
+                if purged and saved and unloaded:
+                    log.info(f"Purge ({id}): OK")
+                    compteur += 1
+                else:
+                    log.warning(f"Purge ({id}): partielle -> purge={purged} save={saved} unload={unloaded}")
+                    erreurs += 1
+            except Exception as err:
+                log.error(f"Erreur purge ({id}): {err}")
+                erreurs += 1
+
+    # Pause adaptative de stabilisation du WIPS entre les lots
+    if ids_remaining:
+        pause = sleep / workers
+        log.info(f"** {compteur}/{len(purge_list)} documents traités - pause adaptative de {pause:.0f}s **")
+        time.sleep(pause)
+
 log.log("")
 
 
