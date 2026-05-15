@@ -1,4 +1,4 @@
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import os, sys
 import re
@@ -30,7 +30,6 @@ class ConfigProperties:
         self._properties_file = os.path.join(self._application_home, "conf", "application.properties")
         self._env_file = os.path.join(self._application_home, "conf", "env.conf")
         
-        self._load_env_from_session()           # Loading current OS env vars
         self._load_file(self._env_file)         # Loading and store variables from env.conf
         self._load_file(self._properties_file)  # Loading and store variables from application.properties.
         
@@ -167,14 +166,3 @@ class ConfigProperties:
             return value.strip()
         else:
             return value
-
-    def _load_env_from_session(self) -> None:
-        """
-        Loading all OS environment variables from current session.
-        This method use "env" and "set" command to get OS env. variables (from Linux and Windows) and set Python os.environ.
-        """
-        cmd = "env" if os.name != "net" else "set"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        for line in result.stdout.splitlines():
-            key, _, value = line.partition("=")
-            os.environ[key] = value

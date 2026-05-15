@@ -1,12 +1,12 @@
-__version__ = "1.0.0"
+__version__ = "1.1.1"
 
 import requests
 import json
 from lib.bootstrap.appenv import AppEnv
 from lib.bip import BIPlatform
 from lib.bootstrap.logger import Logger
-
 from typing import Any, Optional, Dict, List
+import time
 
 class WebIntelligence:
     """
@@ -116,63 +116,110 @@ class WebIntelligence:
                     self.log.error(f"Echec API - {url} - {err}")
 
             return response.text
-    
-    def get_doc_list(self) -> List[Dict[str, Any]]:
+
+    def request_cms(self, query: str) -> List[Dict]:
         """
-        Retourne la liste des documents WebI de la plateforme sous la forme d'une liste de dictionnaire.
-        Le dictionnaire JSON est aplati pour permettre son parcours via la fonction data.get(key)
+        Récupère les résultats de la requête transmise au CMS via l'API cmsquery. (équivalent à AdminTools)
+        Avantage : interroge directement le CMS, aucune session ouverte sur le WIPS.
         Args:
-            None
+            query (str): Requête SQL d'interrogation du CMS
         Return:
-            data (list): Liste de dictionnaire (aplati) des documents
-        Structure du dictionnaire: 
-        • <id> (Integer) The document ID
-        • <cuid> (String) The unique document ID
-        • <name> (String) The document name
-        • <description> (String) The document description
-        • <folderId> (Integer) The identifier of the folder of the CMS repository that contains the document
-        • <scheduled> (Boolean) true if the document has been scheduled
+            data (List): Liste de dictionnaire correspondant au retour du CMS
         """
-        
-        offset: int = 0
-        limit: int = 50          # valeur maximale autorisée par l'API
-        raw_data: Dict[str, Any] = {}
-        documents: List = []
+        url      = f"{self.bip.get_bip_url}/v1/cmsquery"
+        page     = 1
+        pagesize = 500
+        data = []
+
         header: Dict[str, str] = self._set_header(type="json")
 
         while True:
-            param = {"offset": offset, "limit": limit}
-            url: str = f"{self.bip.get_bip_url}/raylight/v1/documents"
+            payload = {
+                "query": (query)
+            }
+            params = {"page": page, "pagesize": pagesize}
+
             try:
-                response = requests.get(url, headers=header, params=param)
+                response = requests.post(url, headers=header, json=payload, params=params)
                 response.raise_for_status()
             except Exception as err:
-                self.log.error(f"Echec API - {url} - {err}")
-            else:
-                # print(f"Récupération de la liste des documents terminée avec succès (offset: {offset})")
-                raw_data = json.loads(response.text).get("documents", {}).get("document", {})
-                
-            batch = raw_data
-
-            # L'API peut renvoyer un dict (1 résultat) ou une liste (n résultats)
-            if isinstance(batch, dict):
-                batch = [batch]
-
-            # si plus rien dans batch, plus aucun document à récupérer
-            if not batch:
-                break                      
-
-            # empilement des données récupérées
-            documents.extend(batch)
-
-            # dernière page atteinte
-            if len(batch) < limit:
+                self.log.error(f"Echec cmsquery page {page} - {err}")
                 break
 
-            offset += limit
+            raw_data    = response.json()
+            entries = raw_data.get("entries", [])
+            # print(entries)
 
-        return documents
+            data.extend(entries)
+            
+            if not entries:
+                break
 
+            if len(entries) < pagesize:
+                break   # dernière page
+
+            page += 1
+
+        return data
+
+    def set_purge_doc(self, doc_id: int, retries: int = 3) -> tuple[bool, bool, bool]:
+        """
+        Purge les données contenu dans le document WebI
+        Args:
+            doc_id (int): Identifiant numérique du document WebI
+            retries (int): Nombre de tentatives en cas d'échec de l'instruction
+        Returns:
+            tuple[bool, bool]: Valeur de retour de l'opération de purge, d'enregistrement et de déchargement du document
+        """
+        url: str = f"{self.bip.get_bip_url}/raylight/v1/documents/{doc_id}"
+        param = {"purge": "true"}
+        unload_body = {"document": {"state": "Unused"}}
+        header = self._set_header(type="json")
+
+        for attempt in range(1, retries + 1):
+            purge = save = unload = False
+            try:
+                response = requests.put(url, headers=header, params=param)
+                response.raise_for_status()
+                purge = "success" in response.json()
+
+                response = requests.put(url, headers=header)
+                response.raise_for_status()
+                save = "success" in response.json()
+
+                response = requests.put(url, headers=header, json=unload_body)
+                response.raise_for_status()
+                unload = "success" in response.json()
+
+                return purge, save, unload
+
+            except Exception as err:
+                wait = 2 ** attempt  # 2s, 4s, 8s
+                self.log.warning(f"Tentative {attempt}/{retries} échouée sur ({doc_id}): {err} — attente {wait}s")
+                if attempt < retries:
+                    time.sleep(wait)
+
+        self.log.error(f"Echec définitif sur ({doc_id}) après {retries} tentatives")
+        return False, False, False
+    
+    def get_all_personal_folder_ids(self, folders: List[Dict], root_ids: set) -> set:
+        """
+        Recherche la liste des dossiers contenus dans les dossiers utilisateurs (Favoris / Personal Folders)
+        Args:
+            folders (List[Dict]): Liste (de dictionnaires )des dossiers présents sur la plateforme
+            root_ids (set): Set des identifiants des dossiers utilisateurs 
+        Returns:
+            set: Set des identifiants des dossiers contenus dans les dossiers utilisateurs
+        """
+        all_ids = set(root_ids)
+        changed = True
+        while changed:
+            changed = False
+            for f in folders:
+                if f["SI_ID"] not in all_ids and f.get("SI_PARENT_FOLDER") in all_ids:
+                    all_ids.add(f["SI_ID"])
+                    changed = True
+        return all_ids
 
     ######################
     ### DATA PROVIDERS ###
@@ -228,7 +275,7 @@ class WebIntelligence:
         Retourne le detail des fournisseurs de données d'un document sous la forme d'une liste de dictionnaire.
         Args:
             doc_id (int): Identifiant numérique du document.
-            simplified (bool, Facultatif)
+            simplified (bool, Facultatif): Simplification des résultats en limitant les valeurs renvoyées par l'API
         Return:
             data (list): Liste de dictionnaire de détails des fournisseurs de données du document.
         """
