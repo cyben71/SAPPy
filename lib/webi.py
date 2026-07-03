@@ -353,6 +353,158 @@ class WebIntelligence:
 
         return data
     
+    def set_repoint_universe(
+        self,
+        doc_id: int,
+        target_universe_id: int,
+        dp_ids: Optional[List[str]] = None,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Repointe le(s) fournisseur(s) de données d'un document Webi vers un nouvel univers
+        (typiquement : migration UNV → UNX).
+
+        Workflow API :
+            1. GET  /documents/{docId}/dataproviders/mappings
+                    ?originDataproviderIds={dp_id}&targetDatasourceId={target_universe_id}
+               → BO calcule le mapping automatique objet par objet
+            2. Vérification que tous les mappings sont status="Ok"
+            3. POST /documents/{docId}/dataproviders/mappings
+                    ?originDataproviderIds={dp_id}&targetDatasourceId={target_universe_id}
+               body = XML retourné par le GET  → commit du repointage
+            4. PUT  /documents/{docId}  (sans body)  → sauvegarde CMS
+
+        Args:
+            doc_id (int)              : Identifiant du document WebI
+            target_universe_id (int)  : ID (SI_ID) de l'univers cible (UNX)
+            dp_ids (List[str], opt.)  : Liste des IDs de DP à repointer (ex: ['DP0']).
+                                        Si None, tous les DP du document sont traités.
+            force (bool, défaut=False): Si True, commite même si certains mappings
+                                        sont en statut "Unresolved" (à utiliser avec précaution)
+        Returns:
+            result (Dict): Rapport d'exécution avec les clés :
+                • success   (bool)       : True si l'opération s'est terminée sans erreur bloquante
+                • committed (List[str])  : DP effectivement repointés
+                • skipped   (List[str])  : DP ignorés (mapping incomplet sans force=True)
+                • errors    (List[str])  : DP en erreur
+                • mapping_details (dict) : Détail du mapping par DP
+        """
+        import xml.etree.ElementTree as ET
+
+        result: Dict[str, Any] = {
+            "success":        False,
+            "committed":      [],
+            "skipped":        [],
+            "errors":         [],
+            "mapping_details": {}
+        }
+
+        base_url   = self.bip.get_bip_url
+        header_xml = self._set_header(type="xml")
+
+        # -------------------------------------------------------
+        # 0. Récupération des DP si dp_ids non fourni
+        # -------------------------------------------------------
+        if dp_ids is None:
+            all_dp = self.get_doc_dp(doc_id, simplified=True)
+            if not all_dp:
+                self.log.error(f"[repoint] Aucun dataprovider trouvé sur le document {doc_id}")
+                return result
+            # On traite uniquement les DP de type unv (la cible est unx)
+            dp_ids = [
+                dp["id"] for dp in all_dp
+                if dp.get("dataSourceType", "").lower() in ("unv", "unx")
+            ]
+            if not dp_ids:
+                self.log.warning(
+                    f"[repoint] Aucun DP de type unv/unx sur le document {doc_id}. "
+                    f"Types trouvés : {[dp.get('dataSourceType') for dp in all_dp]}"
+                )
+                return result
+
+        self.log.info(f"[repoint] Document {doc_id} — DP à traiter : {dp_ids}")
+
+        # -------------------------------------------------------
+        # 1+2+3. Pour chaque DP : GET mapping → vérif → POST commit
+        # -------------------------------------------------------
+        mapping_url = f"{base_url}/raylight/v1/documents/{doc_id}/dataproviders/mappings"
+
+        for dp_id in dp_ids:
+            params = {
+                "originDataproviderIds": dp_id,
+                "targetDatasourceId":    target_universe_id
+            }
+
+            # --- GET : calcul du mapping automatique ---
+            try:
+                self.log.info(f"[repoint] GET mapping — DP={dp_id} → univers cible={target_universe_id}")
+                resp_get = requests.get(mapping_url, headers=header_xml, params=params)
+                resp_get.raise_for_status()
+                mapping_xml = resp_get.text
+            except Exception as err:
+                self.log.error(f"[repoint] Echec GET mapping DP={dp_id} : {err}")
+                result["errors"].append(dp_id)
+                continue
+
+            # --- Vérification des statuts de mapping ---
+            mapping_status, unresolved = self._parse_mapping_status(mapping_xml)
+            result["mapping_details"][dp_id] = {
+                "total":      len(mapping_status),
+                "ok":         sum(1 for s in mapping_status.values() if s == "Ok"),
+                "unresolved": unresolved
+            }
+
+            if unresolved and not force:
+                self.log.warning(
+                    f"[repoint] DP={dp_id} — {len(unresolved)} objet(s) non mappé(s) : {unresolved}. "
+                    f"Utilisez force=True pour forcer le commit."
+                )
+                result["skipped"].append(dp_id)
+                continue
+
+            if unresolved and force:
+                self.log.warning(
+                    f"[repoint] DP={dp_id} — force=True : commit malgré {len(unresolved)} objet(s) non mappé(s)."
+                )
+
+            # --- POST : commit du repointage ---
+            try:
+                self.log.info(f"[repoint] POST commit mapping — DP={dp_id}")
+                resp_post = requests.post(
+                    mapping_url,
+                    headers=header_xml,
+                    params=params,
+                    data=mapping_xml.encode("utf-8")
+                )
+                resp_post.raise_for_status()
+                self.log.info(f"[repoint] DP={dp_id} — repointage commité avec succès.")
+                result["committed"].append(dp_id)
+            except Exception as err:
+                self.log.error(f"[repoint] Echec POST commit DP={dp_id} : {err} — réponse : {getattr(err, 'response', {})}")
+                result["errors"].append(dp_id)
+                continue
+        # -------------------------------------------------------
+        # 4. Sauvegarde CMS (si au moins 1 DP commité)
+        # -------------------------------------------------------
+        if result["committed"]:
+            doc_url = f"{base_url}/raylight/v1/documents/{doc_id}"
+            try:
+                self.log.info(f"[repoint] Sauvegarde CMS du document {doc_id}")
+                resp_save = requests.put(doc_url, headers=header_xml)
+                resp_save.raise_for_status()
+                self.log.info(f"[repoint] Document {doc_id} sauvegardé (HTTP {resp_save.status_code}).")
+            except Exception as err:
+                self.log.error(f"[repoint] Echec sauvegarde document {doc_id} : {err}")
+                result["errors"].append(f"save_doc_{doc_id}")
+
+        result["success"] = len(result["errors"]) == 0
+        self.log.info(
+            f"[repoint] Résultat — committed={result['committed']} | "
+            f"skipped={result['skipped']} | errors={result['errors']}"
+        )
+        self.log.log("")
+
+        return result
     
     ########################################
     ##### FONCTIONS & METHODES PRIVEES #####
@@ -385,4 +537,34 @@ class WebIntelligence:
             'X-SAP-PVL': 'fr-FR'
         }
         return data
-    
+
+
+    def _parse_mapping_status(self, mapping_xml: str):
+        """
+        Parse le XML de mapping retourné par GET /dataproviders/mappings.
+        Retourne :
+            mapping_status (dict) : {source_id: status}
+            unresolved     (list) : liste des source_id non mappés
+        """
+        import xml.etree.ElementTree as ET
+
+        mapping_status: Dict[str, str] = {}
+        unresolved: List[str] = []
+
+        try:
+            root = ET.fromstring(mapping_xml)
+            for mapping in root.iter("mapping"):
+                status    = mapping.get("status", "Unknown")
+                src_node  = mapping.find("source")
+                src_id    = ""
+                if src_node is not None:
+                    id_node = src_node.find("id")
+                    src_id  = id_node.text.strip() if id_node is not None and id_node.text else "?"
+
+                mapping_status[src_id] = status
+                if status != "Ok":
+                    unresolved.append(src_id)
+        except ET.ParseError as e:
+            self.log.error(f"[repoint] Erreur de parsing XML mapping : {e}")
+
+        return mapping_status, unresolved

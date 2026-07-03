@@ -2,12 +2,29 @@
 # Fichier de propriété de type "YAML" #
 # #####################################
 
+############################################################
 ### Paramètres spécifiques aux scripts 'webi_purge_*.py' ###
+############################################################
 exclude_private_docs: True      # exclusion des documents privés pour webi_purge_all_documents
 
-# Liste des documents (publics ou privés) à exclure de la purge 
+### Liste des documents (publics ou privés) à exclure de la purge 
 exclude_list: [
     'AT9rtSAiIAmNKjdnddkBF.pw',
     'AWyV19k7kqdMhKxvuHCti58.99',
     'AYigZnPSDW51InJ.KSDRj13I'
 ]
+
+############################################################
+### Paramètres spécifiques aux scripts 'webi_repoint_universe*.py' ###
+############################################################
+
+### Identification de l'ancien univers (UNV)
+unv_id: 157367
+unv_cuid: 'B2mBHsgMsMPhScIVDq4KhEo'
+
+### Identification du nouvel univers (UNX)
+unx_id: 23339768
+unx_cuid: 'AYPg0Eb_lftKiz6D17eorLM'
+
+### Liste des documents eligibles au repointage
+documents_list: [23531124]

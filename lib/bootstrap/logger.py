@@ -70,7 +70,7 @@ class Logger:
         Example:
             epy.log.log("Simple message, no prefix")
         """
-        self._logger.info(message)
+        self._no_prefix_logger.info(message)
 
     def info(self, message: str) -> None:
         """
@@ -182,5 +182,34 @@ class Logger:
             console_handler.setLevel(logging.DEBUG)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
+
+        # Dedicated sub-logger for log() — no level prefix
+        no_prefix_formatter = logging.Formatter(
+            fmt="%(asctime)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+        self._no_prefix_logger = logging.getLogger(f"{self._application_name}.raw")
+        self._no_prefix_logger.setLevel(logging.DEBUG)
+        self._no_prefix_logger.propagate = False
+
+        if self._no_prefix_logger.handlers:
+            self._no_prefix_logger.handlers.clear()
+
+        no_prefix_file_handler = RotatingFileHandler(
+            filename=self._log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        no_prefix_file_handler.setLevel(logging.DEBUG)
+        no_prefix_file_handler.setFormatter(no_prefix_formatter)
+        self._no_prefix_logger.addHandler(no_prefix_file_handler)
+
+        if self._verbose:
+            no_prefix_console_handler = logging.StreamHandler()
+            no_prefix_console_handler.setLevel(logging.DEBUG)
+            no_prefix_console_handler.setFormatter(no_prefix_formatter)
+            self._no_prefix_logger.addHandler(no_prefix_console_handler)
 
         return logger
